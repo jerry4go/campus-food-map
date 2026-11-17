@@ -1,9 +1,9 @@
 // ===================================================================
-// 校园美食地图助手 - Cloudflare Worker 单文件版
+// 美食地图助手 - Cloudflare Worker 单文件版
 // 部署：Cloudflare Dashboard → Workers & Pages → 创建 Worker → 粘贴本文件
-// 变量（Settings → Variables and Secrets）：
-//   AMAP_KEY            = 高德「Web服务」Key        （建议设为 Secret，加密）
-//   AMAP_JS_KEY         = 高德「Web端(JS API)」Key   （普通变量即可）
+// 变量（Settings → Variables and Secrets，类型选 Secret）：
+//   AMAP_KEY            = 高德「Web服务」Key
+//   AMAP_JS_KEY         = 高德「Web端(JS API)」Key
 //   AMAP_SECURITY_CODE  = 高德安全密钥（可选；数字签名开启时才需要）
 // ===================================================================
 
@@ -69,7 +69,7 @@ const HTML = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
 <meta http-equiv="Pragma" content="no-cache" />
-<title>校园美食地图助手</title>
+<title>美食地图助手</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; color: #222; background: #f5f6f8; }
@@ -221,7 +221,7 @@ const HTML = `<!DOCTYPE html>
 <body>
 <div class="app">
   <header>
-    <h1>🍜 校园美食地图助手</h1>
+    <h1>🍜 美食地图助手</h1>
     <div class="loc"><span class="dot"></span><span id="locText">正在定位...</span><span class="retry" id="locRetry">手动选择</span></div>
   </header>
   <div class="main">
