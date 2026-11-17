@@ -12,6 +12,7 @@ const REGISTRY = {
   "/api/regeo":   "https://restapi.amap.com/v3/geocode/regeo",
   "/api/geo":     "https://restapi.amap.com/v3/geocode/geo",
   "/api/place":   "https://restapi.amap.com/v3/place/text",
+  "/api/around":  "https://restapi.amap.com/v3/place/around",
   "/api/walking": "https://restapi.amap.com/v3/direction/walking",
   "/api/transit": "https://restapi.amap.com/v3/direction/transit/integrated",
 };
@@ -332,6 +333,7 @@ const REST_PLACE = "/api/place";
 const REST_WALK = "/api/walking";
 const REST_GEO = "/api/geo";
 const REST_TRANSIT = "/api/transit";
+const REST_AROUND = "/api/around";
 
 async function loadConfig(){
   try {
@@ -1023,6 +1025,22 @@ function showPickLocation(lng, lat, poiName){
   }, 50);
 }
 
+// 兜底：点击坐标周边搜索最近的店铺名（当 e.poi 不可用时）
+async function findNearestPOI(lng, lat){
+  try {
+    const res = await fetch(\`\${REST_AROUND}?location=\${lng},\${lat}&radius=100&types=050000%7C060000&offset=1&page=1&extensions=base\`);
+    const data = await res.json();
+    if (data.status === "1" && data.pois && data.pois.length) {
+      const p = data.pois[0];
+      const loc = (p.location || "").split(",");
+      const d = (loc.length === 2) ? calcDistance(lng, lat, parseFloat(loc[0]), parseFloat(loc[1])) : 0;
+      // 仅当店铺距离点击点足够近（< 60m）才采用，避免误显示远处店铺
+      if (d <= 60 && p.name) return p.name;
+    }
+  } catch (e) { console.warn("周边搜索失败", e); }
+  return "";
+}
+
 // 统一应用"我的位置"
 // label：点击的 POI 名称（若有），优先显示在顶部，避免只显示逆地理编码得到的建筑名
 async function applyMyLocation(lng, lat, tipMsg, label){
@@ -1031,7 +1049,11 @@ async function applyMyLocation(lng, lat, tipMsg, label){
   showTip(tipMsg || "已设置新的位置");
   // 逆地理编码更新地址文字
   await reverseGeocode();
-  // 若点击的是 POI，顶部优先显示该 POI 名称
+  // e.poi 未提供名称时，用周边搜索兜底找最近的店铺名
+  if (!label) {
+    label = await findNearestPOI(lng, lat);
+  }
+  // 顶部优先显示店铺名
   if (label) {
     $("locText").textContent = label;
   }
