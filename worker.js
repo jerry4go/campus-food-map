@@ -205,6 +205,20 @@ const HTML = `<!DOCTYPE html>
   }
   .map-tip.show { opacity: 1; }
 
+  /* 地图右下角重新定位按钮 */
+  .relocate-btn {
+    position: absolute; right: 16px; bottom: 16px; z-index: 15;
+    width: 44px; height: 44px; border-radius: 50%;
+    background: #fff; border: 1px solid #e5e5e5;
+    box-shadow: 0 2px 10px rgba(0,0,0,.18);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 20px; cursor: pointer; transition: transform .15s, background .15s;
+  }
+  .relocate-btn:hover { background: #f7f7f7; }
+  .relocate-btn:active { transform: scale(.92); background: #f0f0f0; }
+  .relocate-btn:disabled { opacity: .6; cursor: default; }
+  .relocate-btn.loading { animation: spin 1s linear infinite; background: #f0f0f0; }
+
   .loading { padding: 30px; text-align: center; color: #999; font-size: 13px; }
   .loading .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #eee; border-top-color: #ff6b6b; border-radius: 50%; animation: spin .8s linear infinite; vertical-align: middle; margin-right: 6px; }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -276,7 +290,7 @@ const HTML = `<!DOCTYPE html>
     <div class="map-wrap">
       <div id="map"></div>
       <div class="map-tip" id="mapTip"></div>
-
+      <button class="relocate-btn" id="relocateBtn" title="重新定位">📍</button>
     </div>
   </div>
 </div>
@@ -1024,6 +1038,38 @@ function focusMarker(p){
   openInfo(p);
 }
 
+// ============ 重新定位 ============
+async function reLocate(){
+  const btn = $("relocateBtn");
+  if (!btn || btn.disabled) return;
+  btn.classList.add("loading");
+  btn.disabled = true;
+  btn.textContent = "⏳";
+  try {
+    // 清空城市，重新走 geolocation → IP 定位流程
+    userCity = "";
+    const ok = await locateByIP();
+    if (map && window.AMap) {
+      if (routeLine) { map.remove(routeLine); routeLine = null; }
+      if (pickMarker) { map.remove(pickMarker); pickMarker = null; }
+      closeRoutePanel();
+      updateUserMarker(true);
+      map.setZoom(15);
+    }
+    // 若已有搜索关键词，按新位置重新搜索
+    const kw = $("kw").value.trim();
+    if (kw) await searchPOI(kw);
+    showTip(ok ? "已重新定位" : "定位失败，已使用默认位置");
+  } catch (e) {
+    console.warn("重新定位失败", e);
+    showTip("重新定位失败，请重试");
+  } finally {
+    btn.classList.remove("loading");
+    btn.disabled = false;
+    btn.textContent = "📍";
+  }
+}
+
 // ============ 事件绑定 ============
 function bindEvents(){
   $("searchBtn").addEventListener("click", () => searchPOI($("kw").value.trim()));
@@ -1070,6 +1116,7 @@ function bindEvents(){
   });
   // 手动选择城市
   $("locRetry").addEventListener("click", openCityModal);
+  $("relocateBtn").addEventListener("click", reLocate);
   $("cityCancel").addEventListener("click", closeCityModal);
   $("cityOk").addEventListener("click", async () => {
     const city = $("cityInput").value.trim();
