@@ -256,6 +256,7 @@ let userLng = 114.05, userLat = 22.55;
 let userAdcode = "";
 let userCity = "";
 let map = null, markers = [], infoWindow = null, routeLine = null, userMarker = null;
+let pickMarker = null, ignoreMapClick = false;
 let currentList = [], currentSort = "distance";
 let priceFilter = "all", tasteFilter = "all";
 
@@ -794,6 +795,12 @@ async function initMap(){
     });
     infoWindow = new AMap.InfoWindow({ offset: new AMap.Pixel(0, -32), closeWhenClickMap: true });
     updateUserMarker(false);
+    // 点击地图任意点 → 可设为"我的位置"
+    map.on("click", (e) => {
+      if (ignoreMapClick) { ignoreMapClick = false; return; }
+      if (!e || !e.lnglat) return;
+      showPickLocation(e.lnglat.getLng(), e.lnglat.getLat());
+    });
   } catch (e) {
     console.warn("高德 JS API 加载失败", e);
     $("map").innerHTML = `<div class="empty" style="padding-top:60px;">地图加载失败<br/>API Key 可能未开通 JS API 服务</div>`;
@@ -816,7 +823,11 @@ function drawMarkers(list){
         imageSize: new AMap.Size(24, 30)
       })
     });
-    marker.on("click", () => openInfo(p));
+    marker.on("click", () => {
+      ignoreMapClick = true;
+      setTimeout(() => { ignoreMapClick = false; }, 300);
+      openInfo(p);
+    });
     markers.push(marker);
   });
   if (markers.length && !routeLine) {
@@ -860,14 +871,51 @@ function openInfo(p){
 // 定位有偏差时：把某家店铺的位置设为"我的位置"，重新校准
 async function setAsMyLocation(p){
   if (!p || !p.lng || !p.lat) { showTip("该店铺无坐标信息"); return; }
-  userLng = p.lng;
-  userLat = p.lat;
-  showTip(`已将「${p.name}」设为我的位置`);
+  await applyMyLocation(p.lng, p.lat, `已将「${p.name}」设为我的位置`);
+}
+
+// 地图上点击任意点 → 弹出"设为我的位置"
+function showPickLocation(lng, lat){
+  if (!map || !window.AMap || !infoWindow) return;
+  if (pickMarker) { map.remove(pickMarker); pickMarker = null; }
+  pickMarker = new AMap.Marker({
+    position: [lng, lat],
+    map: map,
+    zIndex: 190,
+    icon: new AMap.Icon({
+      size: new AMap.Size(24, 30),
+      image: "data:image/svg+xml;base64," + btoa('<svg xmlns="http://www.w3.org/2000/svg" width="24" height="30" viewBox="0 0 24 30"><path d="M12 0C5.4 0 0 5.4 0 12c0 9 12 18 12 18s12-9 12-18c0-6.6-5.4-12-12-12z" fill="#22c55e"/><circle cx="12" cy="12" r="4" fill="#fff"/></svg>'),
+      imageSize: new AMap.Size(24, 30)
+    })
+  });
+  const content = `
+    <div style="padding:8px;min-width:190px;">
+      <div style="font-size:13px;font-weight:600;color:#222;margin-bottom:4px;">已选择此位置</div>
+      <div style="font-size:11px;color:#888;margin-bottom:8px;">${lng.toFixed(5)}, ${lat.toFixed(5)}</div>
+      <button onclick="void(0)" id="pickSetBtn" style="width:100%;padding:6px;background:#3b82f6;color:#fff;border:none;border-radius:4px;font-size:12px;cursor:pointer;">📍 设为我的位置</button>
+    </div>`;
+  infoWindow.setContent(content);
+  infoWindow.open(map, [lng, lat]);
+  setTimeout(() => {
+    const b = document.getElementById("pickSetBtn");
+    if (b) b.addEventListener("click", () => {
+      if (pickMarker) { map.remove(pickMarker); pickMarker = null; }
+      applyMyLocation(lng, lat, "已设置新的位置");
+    });
+  }, 50);
+}
+
+// 统一应用"我的位置"
+async function applyMyLocation(lng, lat, tipMsg){
+  userLng = lng;
+  userLat = lat;
+  showTip(tipMsg || "已设置新的位置");
   // 逆地理编码更新地址文字
   await reverseGeocode();
   // 更新地图上的"我在这里"标记并居中
   if (map && window.AMap) {
     if (routeLine) { map.remove(routeLine); routeLine = null; }
+    if (pickMarker) { map.remove(pickMarker); pickMarker = null; }
     closeRoutePanel();
     updateUserMarker(true);
     map.setZoom(15);
