@@ -45,10 +45,12 @@
   }
   .search-bar input:focus { border-color: #ff6b6b; }
   .search-bar button {
-    padding: 8px 16px; background: #ff6b6b; color: #fff; border: none; border-radius: 20px;
-    font-size: 14px; cursor: pointer; transition: background .2s;
+    padding: 8px 14px; background: #ff6b6b; color: #fff; border: none; border-radius: 20px;
+    font-size: 13px; cursor: pointer; transition: background .2s; flex-shrink: 0;
   }
   .search-bar button:active { background: #e85555; }
+  .search-bar button.reset { background: #f0f0f0; color: #666; }
+  .search-bar button.reset:active { background: #e2e2e2; }
   .quick-tags { padding: 6px 10px; display: flex; gap: 6px; flex-wrap: wrap; border-bottom: 1px solid #f0f0f0; flex-shrink: 0; }
   .quick-tags span {
     padding: 4px 10px; background: #f5f6f8; border-radius: 12px; font-size: 12px; color: #666;
@@ -182,6 +184,7 @@
       <div class="search-bar">
         <input id="kw" type="text" placeholder="搜索川菜、烧烤、奶茶..." />
         <button id="searchBtn">搜索</button>
+        <button id="resetBtn" class="reset">重置</button>
       </div>
       <div class="quick-tags">
         <span data-kw="川菜">川菜</span>
@@ -1023,9 +1026,38 @@ async function reLocate(){
   }
 }
 
+// ============ 重置 ============
+function resetAll(){
+  // 1. 清空关键词
+  $("kw").value = "";
+  // 2. 重置筛选
+  priceFilter = "all";
+  tasteFilter = "all";
+  document.querySelectorAll("#priceFilter button").forEach(b => b.classList.toggle("active", b.dataset.v === "all"));
+  document.querySelectorAll("#tasteFilter button").forEach(b => b.classList.toggle("active", b.dataset.v === "all"));
+  // 3. 重置排序
+  currentSort = "distance";
+  document.querySelectorAll(".sorts button").forEach(b => b.classList.toggle("active", b.dataset.sort === "distance"));
+  // 4. 清空结果与地图覆盖物
+  currentList = [];
+  markers.forEach(m => m.setMap(null));
+  markers = [];
+  if (map && window.AMap) {
+    if (routeLine) { map.remove(routeLine); routeLine = null; }
+    if (pickMarker) { map.remove(pickMarker); pickMarker = null; }
+  }
+  closeRoutePanel();
+  if (infoWindow) infoWindow.close();
+  // 5. 恢复列表空态
+  $("countText").textContent = "共 0 家";
+  $("list").innerHTML = `<div class="empty">请输入关键词开始搜索</div>`;
+  showTip("已重置搜索条件");
+}
+
 // ============ 事件绑定 ============
 function bindEvents(){
   $("searchBtn").addEventListener("click", () => searchPOI($("kw").value.trim()));
+  $("resetBtn").addEventListener("click", resetAll);
   $("kw").addEventListener("keydown", e => { if (e.key === "Enter") searchPOI($("kw").value.trim()); });
   document.querySelectorAll(".quick-tags span").forEach(el => {
     el.addEventListener("click", () => {
