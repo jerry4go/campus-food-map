@@ -1,0 +1,12 @@
+# Cloudflare Worker 配置
+# 部署命令：npx wrangler deploy
+# 注意：敏感变量（AMAP_KEY 等）请在 Cloudflare Dashboard → Settings → Variables and Secrets 配置，
+#       不要写在此文件中。
+
+name = "campus-food-map"
+main = "worker.js"
+compatibility_date = "2024-09-23"
+
+# 开启日志观测，便于排查问题
+[observability]
+enabled = true
