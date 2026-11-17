@@ -984,7 +984,7 @@ function openInfo(p){
 // 定位有偏差时：把某家店铺的位置设为"我的位置"，重新校准
 async function setAsMyLocation(p){
   if (!p || !p.lng || !p.lat) { showTip("该店铺无坐标信息"); return; }
-  await applyMyLocation(p.lng, p.lat, \`已将「\${p.name}」设为我的位置\`);
+  await applyMyLocation(p.lng, p.lat, \`已将「\${p.name}」设为我的位置\`, p.name);
 }
 
 // 地图上点击任意点/店铺 POI → 弹出"设为我的位置"
@@ -1015,18 +1015,23 @@ function showPickLocation(lng, lat, poiName){
     const b = document.getElementById("pickSetBtn");
     if (b) b.addEventListener("click", () => {
       if (pickMarker) { map.remove(pickMarker); pickMarker = null; }
-      applyMyLocation(lng, lat, poiName ? \`已将「\${poiName}」设为我的位置\` : "已设置新的位置");
+      applyMyLocation(lng, lat, poiName ? \`已将「\${poiName}」设为我的位置\` : "已设置新的位置", poiName);
     });
   }, 50);
 }
 
 // 统一应用"我的位置"
-async function applyMyLocation(lng, lat, tipMsg){
+// label：点击的 POI 名称（若有），优先显示在顶部，避免只显示逆地理编码得到的建筑名
+async function applyMyLocation(lng, lat, tipMsg, label){
   userLng = lng;
   userLat = lat;
   showTip(tipMsg || "已设置新的位置");
   // 逆地理编码更新地址文字
   await reverseGeocode();
+  // 若点击的是 POI，顶部优先显示该 POI 名称
+  if (label) {
+    $("locText").textContent = label;
+  }
   // 更新地图上的"我在这里"标记并居中
   if (map && window.AMap) {
     if (routeLine) { map.remove(routeLine); routeLine = null; }
