@@ -859,11 +859,32 @@ async function initMap(){
     });
     infoWindow = new AMap.InfoWindow({ offset: new AMap.Pixel(0, -32), closeWhenClickMap: true });
     updateUserMarker(false);
-    // 点击地图任意点 → 可设为"我的位置"
+    // 点击地图任意点（含底图上的店铺 POI）→ 可设为"我的位置"
     map.on("click", (e) => {
       if (ignoreMapClick) { ignoreMapClick = false; return; }
-      if (!e || !e.lnglat) return;
-      showPickLocation(e.lnglat.getLng(), e.lnglat.getLat());
+      let lng = null, lat = null, poiName = "";
+      // 普通地图点击
+      if (e && e.lnglat && typeof e.lnglat.getLng === "function") {
+        lng = e.lnglat.getLng();
+        lat = e.lnglat.getLat();
+      }
+      // 点击底图 POI（未在搜索结果中的店铺）
+      if (e && e.poi) {
+        if (e.poi.location && typeof e.poi.location.getLng === "function") {
+          lng = e.poi.location.getLng();
+          lat = e.poi.location.getLat();
+        } else if (typeof e.poi.location === "string") {
+          const parts = e.poi.location.split(",");
+          lng = parseFloat(parts[0]);
+          lat = parseFloat(parts[1]);
+        } else if (Array.isArray(e.poi.location) && e.poi.location.length >= 2) {
+          lng = Number(e.poi.location[0]);
+          lat = Number(e.poi.location[1]);
+        }
+        poiName = e.poi.name || "";
+      }
+      if (lng == null || lat == null || isNaN(lng) || isNaN(lat)) return;
+      showPickLocation(lng, lat, poiName);
     });
   } catch (e) {
     console.warn("高德 JS API 加载失败", e);
@@ -938,8 +959,8 @@ async function setAsMyLocation(p){
   await applyMyLocation(p.lng, p.lat, \`已将「\${p.name}」设为我的位置\`);
 }
 
-// 地图上点击任意点 → 弹出"设为我的位置"
-function showPickLocation(lng, lat){
+// 地图上点击任意点/店铺 POI → 弹出"设为我的位置"
+function showPickLocation(lng, lat, poiName){
   if (!map || !window.AMap || !infoWindow) return;
   if (pickMarker) { map.remove(pickMarker); pickMarker = null; }
   pickMarker = new AMap.Marker({
@@ -952,9 +973,10 @@ function showPickLocation(lng, lat){
       imageSize: new AMap.Size(24, 30)
     })
   });
+  const title = poiName ? escapeHtml(poiName) : "已选择此位置";
   const content = \`
     <div style="padding:8px;min-width:190px;">
-      <div style="font-size:13px;font-weight:600;color:#222;margin-bottom:4px;">已选择此位置</div>
+      <div style="font-size:13px;font-weight:600;color:#222;margin-bottom:4px;">\${title}</div>
       <div style="font-size:11px;color:#888;margin-bottom:8px;">\${lng.toFixed(5)}, \${lat.toFixed(5)}</div>
       <button onclick="void(0)" id="pickSetBtn" style="width:100%;padding:6px;background:#3b82f6;color:#fff;border:none;border-radius:4px;font-size:12px;cursor:pointer;">📍 设为我的位置</button>
     </div>\`;
@@ -964,7 +986,7 @@ function showPickLocation(lng, lat){
     const b = document.getElementById("pickSetBtn");
     if (b) b.addEventListener("click", () => {
       if (pickMarker) { map.remove(pickMarker); pickMarker = null; }
-      applyMyLocation(lng, lat, "已设置新的位置");
+      applyMyLocation(lng, lat, poiName ? \`已将「\${poiName}」设为我的位置\` : "已设置新的位置");
     });
   }, 50);
 }
