@@ -1,0 +1,1017 @@
+// ===================================================================
+// 校园美食地图助手 - Cloudflare Worker 单文件版
+// 部署：Cloudflare Dashboard → Workers & Pages → 创建 Worker → 粘贴本文件
+// 变量（Settings → Variables and Secrets）：
+//   AMAP_KEY            = 高德「Web服务」Key        （建议设为 Secret，加密）
+//   AMAP_JS_KEY         = 高德「Web端(JS API)」Key   （普通变量即可）
+//   AMAP_SECURITY_CODE  = 高德安全密钥（可选；数字签名开启时才需要）
+// ===================================================================
+
+const REGISTRY = {
+  "/api/ip":      "https://restapi.amap.com/v3/ip",
+  "/api/regeo":   "https://restapi.amap.com/v3/geocode/regeo",
+  "/api/geo":     "https://restapi.amap.com/v3/geocode/geo",
+  "/api/place":   "https://restapi.amap.com/v3/place/text",
+  "/api/walking": "https://restapi.amap.com/v3/direction/walking",
+  "/api/transit": "https://restapi.amap.com/v3/direction/transit/integrated",
+};
+
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+}
+
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+
+    // 运行时下发前端 JS API Key（页面源码不含任何 Key）
+    if (url.pathname === "/api/config") {
+      return json({
+        jsKey: env.AMAP_JS_KEY || "",
+        securityCode: env.AMAP_SECURITY_CODE || "",
+      });
+    }
+
+    // REST 代理：前端只请求 /api/*，Key 在服务端注入
+    const target = REGISTRY[url.pathname];
+    if (target) {
+      if (!env.AMAP_KEY) return json({ status: "0", info: "AMAP_KEY 未配置" }, 500);
+      const params = new URLSearchParams(url.search);
+      params.set("key", env.AMAP_KEY);
+      try {
+        const res = await fetch(target + "?" + params.toString());
+        return new Response(res.body, {
+          status: res.status,
+          headers: {
+            "content-type": "application/json; charset=utf-8",
+            "cache-control": "no-store",
+          },
+        });
+      } catch (e) {
+        return json({ status: "0", info: "代理请求失败: " + e.message }, 502);
+      }
+    }
+
+    // 其余路径返回页面
+    return new Response(HTML, {
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "no-store",
+      },
+    });
+  },
+};
+
+const HTML = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+<meta http-equiv="Pragma" content="no-cache" />
+<title>校园美食地图助手</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; color: #222; background: #f5f6f8; }
+  .app { display: flex; flex-direction: column; height: 100vh; }
+  header {
+    background: linear-gradient(135deg, #ff6b6b 0%, #ff8e53 100%);
+    color: #fff; padding: 12px 16px; box-shadow: 0 2px 8px rgba(255,107,107,.3);
+    flex-shrink: 0; z-index: 10;
+  }
+  header h1 { font-size: 18px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  header .loc { font-size: 12px; opacity: .95; margin-top: 4px; display: flex; align-items: center; gap: 4px; }
+  header .loc .dot { width: 6px; height: 6px; background: #fff; border-radius: 50%; animation: pulse 1.4s infinite; }
+  header .loc .retry { margin-left: 8px; padding: 2px 8px; background: rgba(255,255,255,.25); border-radius: 10px; cursor: pointer; font-size: 11px; }
+  header .loc .retry:active { background: rgba(255,255,255,.4); }
+  @keyframes pulse { 0%,100%{opacity:.4;} 50%{opacity:1;} }
+  .modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: none; align-items: center; justify-content: center; z-index: 100; }
+  .modal-mask.show { display: flex; }
+  .modal { background: #fff; border-radius: 12px; padding: 20px; width: 90%; max-width: 360px; }
+  .modal h3 { font-size: 15px; margin-bottom: 8px; }
+  .modal input { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; margin-bottom: 10px; outline: none; }
+  .modal .btns { display: flex; gap: 8px; }
+  .modal .btns button { flex: 1; padding: 8px; border: none; border-radius: 8px; font-size: 13px; cursor: pointer; }
+  .modal .btns .ok { background: #ff6b6b; color: #fff; }
+  .modal .btns .cancel { background: #f0f0f0; color: #666; }
+  .modal .hint { font-size: 11px; color: #999; margin-bottom: 10px; line-height: 1.5; }
+
+  .main { flex: 1; display: flex; overflow: hidden; }
+  .panel {
+    width: 400px; max-width: 100%; background: #fff; display: flex; flex-direction: column;
+    border-right: 1px solid #eee; flex-shrink: 0;
+  }
+  .search-bar { padding: 10px; border-bottom: 1px solid #f0f0f0; display: flex; gap: 8px; flex-shrink: 0; }
+  .search-bar input {
+    flex: 1; padding: 8px 12px; border: 1px solid #ddd; border-radius: 20px; font-size: 14px; outline: none;
+    transition: border-color .2s;
+  }
+  .search-bar input:focus { border-color: #ff6b6b; }
+  .search-bar button {
+    padding: 8px 16px; background: #ff6b6b; color: #fff; border: none; border-radius: 20px;
+    font-size: 14px; cursor: pointer; transition: background .2s;
+  }
+  .search-bar button:active { background: #e85555; }
+  .quick-tags { padding: 6px 10px; display: flex; gap: 6px; flex-wrap: wrap; border-bottom: 1px solid #f0f0f0; flex-shrink: 0; }
+  .quick-tags span {
+    padding: 4px 10px; background: #f5f6f8; border-radius: 12px; font-size: 12px; color: #666;
+    cursor: pointer; transition: all .2s;
+  }
+  .quick-tags span:active { background: #ffe0e0; color: #ff6b6b; }
+
+  /* 筛选器 */
+  .filters { padding: 8px 10px; border-bottom: 1px solid #f0f0f0; flex-shrink: 0; }
+  .filters .row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+  .filters .row:last-child { margin-bottom: 0; }
+  .filters .label { font-size: 11px; color: #999; width: 44px; flex-shrink: 0; }
+  .filters .opts { display: flex; gap: 4px; flex-wrap: wrap; }
+  .filters .opts button {
+    padding: 3px 9px; border: 1px solid #e5e5e5; background: #fff; border-radius: 10px;
+    font-size: 11px; color: #777; cursor: pointer;
+  }
+  .filters .opts button.active { background: #ff6b6b; color: #fff; border-color: #ff6b6b; }
+
+  .sort-bar { padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #f0f0f0; flex-shrink: 0; }
+  .sort-bar .count { font-size: 12px; color: #999; }
+  .sort-bar .sorts { display: flex; gap: 6px; }
+  .sort-bar .sorts button {
+    padding: 4px 10px; border: 1px solid #ddd; background: #fff; border-radius: 12px;
+    font-size: 12px; color: #666; cursor: pointer;
+  }
+  .sort-bar .sorts button.active { background: #ff6b6b; color: #fff; border-color: #ff6b6b; }
+
+  .list { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+  .item {
+    padding: 12px; border-bottom: 1px solid #f5f5f5; cursor: pointer; transition: background .15s;
+  }
+  .item:active { background: #fafafa; }
+  .item .top { display: flex; gap: 10px; }
+  .item .badge {
+    width: 40px; height: 40px; border-radius: 10px; background: linear-gradient(135deg,#ff6b6b,#ff8e53);
+    color: #fff; display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0;
+  }
+  .item .info { flex: 1; min-width: 0; }
+  .item .info .name { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .item .info .meta { font-size: 12px; color: #888; margin-top: 4px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .item .info .meta .price { color: #ff6b6b; }
+  .item .info .meta .rating { color: #ffa500; }
+  .item .info .addr { font-size: 11px; color: #aaa; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .item .reason {
+    margin-top: 8px; padding: 6px 8px; background: #fff7f0; border-left: 3px solid #ff8e53;
+    font-size: 12px; color: #b06030; border-radius: 0 4px 4px 0; line-height: 1.5;
+  }
+  .item .actions { margin-top: 8px; display: flex; gap: 8px; }
+  .item .actions button {
+    flex: 1; padding: 6px; border: none; border-radius: 6px; font-size: 12px; cursor: pointer;
+  }
+  .item .actions .go { background: #ff6b6b; color: #fff; }
+  .item .actions .go:active { background: #e85555; }
+  .item .actions .go.loading { background: #ccc; pointer-events: none; }
+  .item .actions .detail { background: #f0f0f0; color: #666; }
+
+  /* 路线面板（内联在列表项下方） */
+  .route-inline {
+    margin-top: 8px; padding: 10px; background: #f8f9fb; border: 1px solid #e8eaf0;
+    border-radius: 8px; display: none;
+  }
+  .route-inline.show { display: block; }
+  .route-inline .rp-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .route-inline .rp-title { font-size: 13px; font-weight: 600; color: #333; }
+  .route-inline .rp-close { font-size: 16px; color: #999; cursor: pointer; line-height: 1; padding: 0 4px; }
+  .route-inline .rp-summary {
+    display: flex; gap: 8px; padding: 8px; background: #fff; border-radius: 6px; margin-bottom: 8px;
+  }
+  .route-inline .rp-summary .s-item { flex: 1; text-align: center; }
+  .route-inline .rp-summary .s-item .v { font-size: 14px; font-weight: 600; color: #ff6b6b; }
+  .route-inline .rp-summary .s-item .l { font-size: 10px; color: #999; margin-top: 2px; }
+  .route-inline .rp-desc { font-size: 12px; color: #555; line-height: 1.6; padding: 2px 0; }
+  .route-inline .rp-steps { margin-top: 8px; }
+  .route-inline .rp-steps .step {
+    padding: 5px 0; font-size: 11px; color: #666; border-bottom: 1px dashed #eee;
+    display: flex; gap: 6px;
+  }
+  .route-inline .rp-steps .step:last-child { border-bottom: none; }
+  .route-inline .rp-steps .step .n {
+    width: 16px; height: 16px; background: #ff6b6b; color: #fff; border-radius: 50%;
+    font-size: 9px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  }
+
+  .map-wrap { flex: 1; position: relative; min-width: 0; }
+  #map { width: 100%; height: 100%; }
+  .map-tip {
+    position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+    background: rgba(0,0,0,.7); color: #fff; padding: 6px 12px; border-radius: 16px;
+    font-size: 12px; pointer-events: none; opacity: 0; transition: opacity .3s; z-index: 5;
+  }
+  .map-tip.show { opacity: 1; }
+
+  .loading { padding: 30px; text-align: center; color: #999; font-size: 13px; }
+  .loading .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #eee; border-top-color: #ff6b6b; border-radius: 50%; animation: spin .8s linear infinite; vertical-align: middle; margin-right: 6px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .empty { padding: 40px 20px; text-align: center; color: #bbb; font-size: 13px; }
+
+  @media (max-width: 720px) {
+    .main { flex-direction: column; }
+    .panel { width: 100%; height: 50%; border-right: none; border-bottom: 1px solid #eee; }
+    .map-wrap { height: 50%; }
+
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>🍜 校园美食地图助手</h1>
+    <div class="loc"><span class="dot"></span><span id="locText">正在定位...</span><span class="retry" id="locRetry">手动选择</span></div>
+  </header>
+  <div class="main">
+    <div class="panel">
+      <div class="search-bar">
+        <input id="kw" type="text" placeholder="搜索川菜、烧烤、奶茶..." />
+        <button id="searchBtn">搜索</button>
+      </div>
+      <div class="quick-tags">
+        <span data-kw="川菜">川菜</span>
+        <span data-kw="烧烤">烧烤</span>
+        <span data-kw="奶茶">奶茶</span>
+        <span data-kw="火锅">火锅</span>
+        <span data-kw="快餐">快餐</span>
+        <span data-kw="面食">面食</span>
+      </div>
+      <div class="filters">
+        <div class="row">
+          <span class="label">价格</span>
+          <div class="opts" id="priceFilter">
+            <button data-v="all" class="active">全部</button>
+            <button data-v="cheap">平价</button>
+            <button data-v="mid">中档</button>
+            <button data-v="high">高档</button>
+          </div>
+        </div>
+        <div class="row">
+          <span class="label">口味</span>
+          <div class="opts" id="tasteFilter">
+            <button data-v="all" class="active">全部</button>
+            <button data-v="川菜">川菜</button>
+            <button data-v="粤菜">粤菜</button>
+            <button data-v="日料">日料</button>
+            <button data-v="西餐">西餐</button>
+            <button data-v="小吃">小吃</button>
+            <button data-v="奶茶">奶茶</button>
+          </div>
+        </div>
+      </div>
+      <div class="sort-bar">
+        <span class="count" id="countText">共 0 家</span>
+        <div class="sorts">
+          <button data-sort="distance" class="active">距离最近</button>
+          <button data-sort="rating">评分最高</button>
+          <button data-sort="recommend">智能推荐</button>
+        </div>
+      </div>
+      <div class="list" id="list">
+        <div class="empty">请输入关键词开始搜索</div>
+      </div>
+    </div>
+    <div class="map-wrap">
+      <div id="map"></div>
+      <div class="map-tip" id="mapTip"></div>
+
+    </div>
+  </div>
+</div>
+<div class="modal-mask" id="cityModal">
+  <div class="modal">
+    <h3>手动选择城市</h3>
+    <div class="hint">定位失败时，可手动输入城市或地址（如"深圳市南山区"、"北京海淀区"），将调用高德地理编码接口获取坐标。</div>
+    <input id="cityInput" type="text" placeholder="输入城市或地址..." />
+    <div class="btns">
+      <button class="cancel" id="cityCancel">取消</button>
+      <button class="ok" id="cityOk">确定</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ============ 配置 ============
+// 页面源码不含任何 Key；所有高德 REST 请求经 Worker 代理（/api/*），
+// JS API Key 由 /api/config 在运行时下发。
+let AMAP_JS_KEY = "";
+const REST_IP = "/api/ip";
+const REST_REGEO = "/api/regeo";
+const REST_PLACE = "/api/place";
+const REST_WALK = "/api/walking";
+const REST_GEO = "/api/geo";
+const REST_TRANSIT = "/api/transit";
+
+async function loadConfig(){
+  try {
+    const r = await fetch("/api/config");
+    const cfg = await r.json();
+    if (cfg.securityCode) {
+      window._AMapSecurityConfig = { securityJsCode: cfg.securityCode };
+    }
+    AMAP_JS_KEY = cfg.jsKey || "";
+  } catch (e) { console.warn("加载配置失败", e); }
+}
+
+// ============ 全局状态 ============
+let userLng = 114.05, userLat = 22.55;
+let userAdcode = "";
+let map = null, markers = [], infoWindow = null, routeLine = null, userMarker = null;
+let currentList = [], currentSort = "distance";
+let priceFilter = "all", tasteFilter = "all";
+
+// ============ 工具函数 ============
+function $(id){ return document.getElementById(id); }
+function showTip(msg){
+  const t = $("mapTip"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(showTip._t); showTip._t = setTimeout(()=>t.classList.remove("show"), 2500);
+}
+function calcDistance(lng1, lat1, lng2, lat2){
+  const R = 6371000;
+  const dLat = (lat2-lat1)*Math.PI/180, dLng = (lng2-lng1)*Math.PI/180;
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)**2;
+  return Math.round(R*2*Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
+}
+function fmtDist(d){
+  if (d < 1000) return d + " 米";
+  return (d/1000).toFixed(1) + " 公里";
+}
+function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c])); }
+
+// ============ 高德 JS API 加载 ============
+function loadAmapJS(){
+  return new Promise((resolve, reject) => {
+    if (window.AMap) { resolve(); return; }
+    const cb = "_amap_init_cb_" + Date.now();
+    window[cb] = resolve;
+    const s = document.createElement("script");
+    s.src = \`https://webapi.amap.com/maps?v=2.0&key=\${AMAP_JS_KEY}&callback=\${cb}\`;
+    s.onerror = reject;
+    document.head.appendChild(s);
+  });
+}
+
+// ============ 定位模块 ============
+// 默认位置：深圳南山区深南大道（已验证可通过地理编码接口获取）
+const DEFAULT_LNG = 113.993509, DEFAULT_LAT = 22.533391;
+const DEFAULT_ADDR = "广东省深圳市南山区深南大道";
+
+// 获取公网 IP（高德 IP 定位不传 ip 参数时拿不到客户端真实 IP）
+async function getPublicIP(){
+  const services = [
+    "https://api.ipify.org?format=json",
+    "https://ipapi.co/json/",
+    "https://get.geojs.io/v1/ip/geo.json"
+  ];
+  for (const url of services) {
+    try {
+      const res = await fetch(url);
+      const data = await res.json();
+      const ip = data.ip || data.query || data.ip_address;
+      if (ip) return ip;
+    } catch (e) { /* 尝试下一个 */ }
+  }
+  return null;
+}
+
+async function locateByIP(){
+  // 1. 优先用浏览器 geolocation（HTTPS 环境下可用，精度米级）
+  const geoOk = await locateByGeolocation();
+  if (geoOk) return true;
+
+  // 2. 兜底：公网 IP → 高德 IP 定位（城市级精度）
+  $("locText").textContent = "正在通过 IP 定位...";
+  const ip = await getPublicIP();
+  if (ip) {
+    try {
+      const res = await fetch(\`\${REST_IP}?ip=\${ip}\`);
+      const data = await res.json();
+      if (data.status === "1" && data.rectangle && typeof data.rectangle === "string" && data.rectangle.length) {
+        const [[lng1, lat1], [lng2, lat2]] = data.rectangle.split(";").map(p => p.split(",").map(Number));
+        userLng = (lng1 + lng2) / 2;
+        userLat = (lat1 + lat2) / 2;
+        userAdcode = data.adcode || "";
+        await reverseGeocode();
+        showTip(\`已定位：\${data.city || ""}（IP 定位，城市级精度）\`);
+        return true;
+      }
+      console.warn("IP 定位返回空，ip=", ip);
+    } catch (e) { console.warn("IP 定位请求失败", e); }
+  } else {
+    console.warn("无法获取公网 IP");
+  }
+  // 3. 最终降级：默认位置（深圳南山）
+  userLng = DEFAULT_LNG;
+  userLat = DEFAULT_LAT;
+  userAdcode = "440305";
+  $("locText").textContent = DEFAULT_ADDR + "（默认）";
+  showTip("定位失败，已使用默认位置，可手动切换");
+  return false;
+}
+
+// 浏览器精确定位（需 HTTPS 或 localhost，精度米级）
+function locateByGeolocation(){
+  return new Promise((resolve) => {
+    if (!navigator.geolocation) { resolve(false); return; }
+    if (!window.isSecureContext) {
+      console.warn("非安全上下文，geolocation 不可用（需 HTTPS 或 localhost）");
+      resolve(false);
+      return;
+    }
+    $("locText").textContent = "正在精确定位（请允许授权）...";
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        userLng = pos.coords.longitude;
+        userLat = pos.coords.latitude;
+        await reverseGeocode();
+        showTip("已精确定位（GPS/基站）");
+        resolve(true);
+      },
+      (err) => { console.warn("geolocation 失败:", err.message); resolve(false); },
+      { timeout: 8000, enableHighAccuracy: true, maximumAge: 60000 }
+    );
+  });
+}
+
+async function reverseGeocode(){
+  try {
+    const res = await fetch(\`\${REST_REGEO}?location=\${userLng},\${userLat}&extensions=base\`);
+    const data = await res.json();
+    if (data.status === "1" && data.regeocode) {
+      const addr = data.regeocode.formatted_address;
+      $("locText").textContent = addr || "已定位";
+      if (data.regeocode.addressComponent && data.regeocode.addressComponent.adcode) {
+        userAdcode = data.regeocode.addressComponent.adcode;
+      }
+      return;
+    }
+  } catch (e) { console.warn("逆地理编码失败", e); }
+  $("locText").textContent = \`已定位 (\${userLng.toFixed(4)}, \${userLat.toFixed(4)})\`;
+}
+
+function locateByBrowser(){
+  return new Promise((resolve) => {
+    if (!navigator.geolocation) { $("locText").textContent = "定位失败，点击手动选择"; resolve(false); return; }
+    $("locText").textContent = "正在获取精确定位...";
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        userLng = pos.coords.longitude;
+        userLat = pos.coords.latitude;
+        await reverseGeocode();
+        resolve(true);
+      },
+      () => { $("locText").textContent = "定位失败，点击手动选择"; resolve(false); },
+      { timeout: 5000, enableHighAccuracy: false }
+    );
+  });
+}
+
+// 手动选择城市：调用地理编码接口
+async function locateByCityName(city){
+  try {
+    const res = await fetch(\`\${REST_GEO}?address=\${encodeURIComponent(city)}\`);
+    const data = await res.json();
+    if (data.status === "1" && data.geocodes && data.geocodes.length) {
+      const g = data.geocodes[0];
+      userLng = parseFloat(g.location.split(",")[0]);
+      userLat = parseFloat(g.location.split(",")[1]);
+      userAdcode = g.adcode || "";
+      $("locText").textContent = g.formatted_address || city;
+      // 重新设置地图中心 + 清除旧标记/路线
+      if (map && window.AMap) {
+        map.setZoomAndCenter(14, [userLng, userLat]);
+        markers.forEach(m => m.setMap(null));
+        markers = [];
+        if (routeLine) { map.remove(routeLine); routeLine = null; }
+        closeRoutePanel();
+        updateUserMarker(true);
+      }
+      // 若已有搜索关键词，自动重新搜索
+      const kw = $("kw").value.trim();
+      if (kw) await searchPOI(kw);
+      return true;
+    }
+  } catch (e) { console.warn("地理编码失败", e); }
+  $("locText").textContent = "城市查询失败，请重试";
+  showTip("城市查询失败，请重试");
+  return false;
+}
+
+function openCityModal(){
+  $("cityModal").classList.add("show");
+  $("cityInput").value = "";
+  setTimeout(() => $("cityInput").focus(), 100);
+}
+function closeCityModal(){ $("cityModal").classList.remove("show"); }
+
+// ============ POI 搜索模块 ============
+async function searchPOI(keyword){
+  if (!keyword) return;
+  $("list").innerHTML = \`<div class="loading"><span class="spinner"></span>搜索中...</div>\`;
+  try {
+    const url = \`\${REST_PLACE}?keywords=\${encodeURIComponent(keyword)}&location=\${userLng},\${userLat}&city=\${userAdcode || ""}&types=050000&radius=3000&sortrule=distance&offset=30&page=1&extensions=all\`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data.status === "1" && data.pois && data.pois.length) {
+      currentList = data.pois.map(p => normalizePOI(p, keyword));
+      renderList();
+      drawMarkers();
+      showTip(\`找到 \${currentList.length} 家餐厅\`);
+      return;
+    }
+    throw new Error("无结果");
+  } catch (e) {
+    console.warn("POI 搜索失败，使用 Mock 数据", e);
+    currentList = getMockData(keyword);
+    renderList();
+    drawMarkers();
+    showTip("API 请求失败，已使用示例数据");
+  }
+}
+
+function normalizePOI(p, keyword){
+  const [lng, lat] = (p.location || "").split(",").map(Number);
+  const distance = (lng && lat) ? calcDistance(userLng, userLat, lng, lat) : 0;
+  let rating = 0;
+  if (p.biz_ext && p.biz_ext.rating) rating = parseFloat(p.biz_ext.rating) || 0;
+  let price = 0;
+  if (p.biz_ext && p.biz_ext.cost) price = parseFloat(p.biz_ext.cost) || 0;
+  return {
+    id: p.id || Math.random().toString(36).slice(2),
+    name: p.name || "未知",
+    type: guessTaste(p.name + " " + (p.type || "") + " " + keyword),
+    address: p.address || "",
+    lng, lat, distance,
+    rating, price,
+    tel: p.tel || ""
+  };
+}
+
+// 根据名称/类型猜测口味分类
+function guessTaste(text){
+  const rules = [
+    { t: "川菜", k: ["川","辣","麻辣","水煮","酸菜鱼","毛血旺"] },
+    { t: "粤菜", k: ["粤","烧腊","茶餐厅","煲仔","肠粉","早茶"] },
+    { t: "日料", k: ["日","寿司","刺身","拉面","居酒屋","料理"] },
+    { t: "西餐", k: ["西餐","牛排","披萨","意面","汉堡","咖啡"] },
+    { t: "奶茶", k: ["奶茶","果汁","饮品","茶饮","咖啡"] },
+    { t: "小吃", k: ["小吃","粉","面","串","烧烤","煎饼","麻辣烫"] }
+  ];
+  for (const r of rules) {
+    if (r.k.some(k => text.includes(k))) return r.t;
+  }
+  return "其他";
+}
+
+// ============ Mock 数据 ============
+function getMockData(keyword){
+  const samples = [
+    { name: \`\${keyword}·老字号\`, dx: 0.008, dy: 0.005, price: 25, rating: 4.5 },
+    { name: \`\${keyword}·旗舰店\`, dx: -0.012, dy: 0.009, price: 68, rating: 4.7 },
+    { name: \`\${keyword}·小吃店\`, dx: 0.015, dy: -0.007, price: 18, rating: 4.2 },
+    { name: \`\${keyword}·大食堂\`, dx: -0.006, dy: -0.011, price: 35, rating: 4.0 },
+    { name: \`\${keyword}·私房菜\`, dx: 0.020, dy: 0.012, price: 128, rating: 4.8 },
+    { name: \`\${keyword}·快餐店\`, dx: -0.018, dy: 0.003, price: 20, rating: 3.9 },
+    { name: \`\${keyword}·美食城\`, dx: 0.005, dy: 0.018, price: 50, rating: 4.3 },
+    { name: \`\${keyword}·小馆子\`, dx: -0.009, dy: -0.015, price: 30, rating: 4.1 }
+  ];
+  return samples.map((s, i) => {
+    const lng = userLng + s.dx, lat = userLat + s.dy;
+    return {
+      id: "mock_" + i,
+      name: s.name,
+      type: guessTaste(s.name + " " + keyword),
+      address: "示例地址（Mock 数据）",
+      lng, lat,
+      distance: calcDistance(userLng, userLat, lng, lat),
+      rating: s.rating, price: s.price,
+      tel: "暂无"
+    };
+  });
+}
+
+// ============ 智能推荐（依据 food-recommend-skill 规则） ============
+// 规则：距离<1km优先；平价<30 / 中档30-80 / 高档>80；评分>4.0优先
+function priceTier(p){
+  if (p.price === 0) return "unknown";
+  if (p.price < 30) return "cheap";
+  if (p.price <= 80) return "mid";
+  return "high";
+}
+function tierName(t){ return { cheap:"平价", mid:"中档", high:"高档", unknown:"未知" }[t] || "未知"; }
+
+function genRecommendReason(p){
+  const parts = [];
+  // 价格 + 场景
+  const tier = priceTier(p);
+  let scene = "";
+  if (tier === "cheap") scene = "适合学生日常就餐";
+  else if (tier === "mid") scene = "适合宿舍聚餐";
+  else if (tier === "high") scene = "适合聚会请客";
+  if (p.price) parts.push(\`人均\${p.price}元\`);
+  if (scene) parts.push(scene);
+  // 距离
+  if (p.distance > 0) {
+    if (p.distance < 1000) parts.push(\`步行约\${Math.max(1, Math.round(p.distance/70))}分钟可达\`);
+    else parts.push(\`约\${fmtDist(p.distance)}可达\`);
+  }
+  // 评分
+  if (p.rating >= 4.5) parts.push("口碑优秀");
+  else if (p.rating >= 4.0) parts.push("评分不错");
+  return parts.join("，");
+}
+
+// 智能推荐评分（用于排序 + 标记 Top）
+function recommendScore(p){
+  let s = 0;
+  if (p.distance < 1000) s += 30; else s += Math.max(0, 20 - (p.distance-1000)/200);
+  if (p.rating > 4.0) s += (p.rating - 4.0) * 15;
+  if (p.price > 0 && p.price < 30) s += 8;
+  return s;
+}
+
+// ============ 筛选 + 列表渲染 ============
+function applyFilters(list){
+  return list.filter(p => {
+    if (priceFilter !== "all" && priceTier(p) !== priceFilter) return false;
+    if (tasteFilter !== "all" && p.type !== tasteFilter) return false;
+    return true;
+  });
+}
+
+function renderList(){
+  try {
+    const filtered = applyFilters(currentList);
+    if (!filtered.length) {
+      $("list").innerHTML = \`<div class="empty">未找到符合筛选条件的餐厅</div>\`;
+      $("countText").textContent = "共 0 家";
+      drawMarkers();
+      return;
+    }
+    let sorted = [...filtered];
+    if (currentSort === "distance") sorted.sort((a,b) => a.distance - b.distance);
+    else if (currentSort === "rating") sorted.sort((a,b) => (b.rating||0) - (a.rating||0));
+    else if (currentSort === "recommend") sorted.sort((a,b) => recommendScore(b) - recommendScore(a));
+
+    $("countText").textContent = \`共 \${sorted.length} 家\`;
+    $("list").innerHTML = sorted.map((p, i) => {
+      const reason = genRecommendReason(p);
+      const topTag = (currentSort === "recommend" && i === 0) ? '<span style="color:#ff6b6b;font-size:11px;margin-left:4px;">★推荐</span>' : "";
+      const ratingStr = p.rating ? \`<span class="rating">★ \${Number(p.rating).toFixed(1)}</span>\` : "";
+      return \`
+      <div class="item" data-id="\${p.id}">
+        <div class="top">
+          <div class="badge">\${i + 1}</div>
+          <div class="info">
+            <div class="name">\${escapeHtml(p.name)}\${topTag}</div>
+            <div class="meta">
+              <span>📍 \${fmtDist(p.distance)}</span>
+              \${p.price ? \`<span class="price">¥\${p.price}/人</span>\` : ""}
+              \${ratingStr}
+              <span style="color:#aaa;">\${escapeHtml(p.type)}</span>
+            </div>
+            <div class="addr">\${escapeHtml(p.address || "地址不详")}</div>
+          </div>
+        </div>
+        <div class="reason">💡 \${escapeHtml(reason)}</div>
+        <div class="actions">
+          <button class="go" data-id="\${p.id}">🚶 去这里</button>
+          <button class="detail" data-id="\${p.id}">查看详情</button>
+        </div>
+        <div class="route-inline" id="route-\${p.id}">
+          <div class="rp-header">
+            <div class="rp-title">路线规划</div>
+            <div class="rp-close">×</div>
+          </div>
+          <div class="rp-summary">
+            <div class="s-item"><div class="v rp-dist">-</div><div class="l">距离</div></div>
+            <div class="s-item"><div class="v rp-time">-</div><div class="l">用时</div></div>
+            <div class="s-item"><div class="v">步行</div><div class="l">方式</div></div>
+          </div>
+          <div class="rp-desc"></div>
+          <div class="rp-steps"></div>
+        </div>
+      </div>\`;
+    }).join("");
+
+  // 绑定事件
+  $("list").querySelectorAll(".item").forEach(el => {
+    el.addEventListener("click", (e) => {
+      if (e.target.tagName === "BUTTON") return;
+      const p = currentList.find(x => x.id === el.dataset.id);
+      if (p) focusMarker(p);
+    });
+  });
+  $("list").querySelectorAll(".actions .go").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const p = currentList.find(x => x.id === btn.dataset.id);
+      if (p) planRoute(p, btn);
+    });
+  });
+  $("list").querySelectorAll(".actions .detail").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const p = currentList.find(x => x.id === btn.dataset.id);
+      if (p) focusMarker(p);
+    });
+  });
+
+  drawMarkers(filtered);
+  } catch (err) {
+    console.error("renderList 异常:", err, "currentList.length=", currentList.length, "currentSort=", currentSort);
+    $("list").innerHTML = \`<div class="empty">渲染异常：\${escapeHtml(err.message)}<br/>currentList: \${currentList.length} 条</div>\`;
+  }
+}
+
+// ============ 路线规划模块 ============
+async function planRoute(p, btn){
+  if (!p.lng || !p.lat) { showTip("该餐厅无坐标信息"); return; }
+  const origin = \`\${userLng},\${userLat}\`;
+  const dest = \`\${p.lng},\${p.lat}\`;
+  const itemEl = btn ? btn.closest(".item") : null;
+  const inlineEl = itemEl ? itemEl.querySelector(".route-inline") : null;
+  if (btn) { btn.classList.add("loading"); btn.textContent = "规划中..."; }
+
+  // 步行路线
+  let walkData = null;
+  try {
+    const res = await fetch(\`\${REST_WALK}?origin=\${origin}&destination=\${dest}\`);
+    const data = await res.json();
+    if (data.status === "1" && data.route && data.route.paths && data.route.paths.length) {
+      walkData = data.route.paths[0];
+    }
+  } catch (e) { console.warn("步行路线请求失败", e); }
+
+  if (btn) { btn.classList.remove("loading"); btn.textContent = "🚶 去这里"; }
+
+  if (walkData) {
+    showRoutePanel(inlineEl, walkData, "walking");
+    drawRouteLine(walkData);
+  } else {
+    // 降级：直接估算
+    const estDist = p.distance;
+    const estTime = Math.max(1, Math.round(estDist / 70)); // 70m/min 步行
+    showRoutePanel(inlineEl, {
+      distance: estDist,
+      duration: estTime * 60,
+      steps: [{ instruction: "直行前往目的地（估算路线）" }]
+    }, "walking", true);
+    showTip("路线 API 失败，已估算");
+  }
+}
+
+function showRoutePanel(inlineEl, path, mode, isEst){
+  if (!inlineEl) return;
+  // 先关闭其他已展开的内联路线
+  document.querySelectorAll(".route-inline.show").forEach(el => {
+    if (el !== inlineEl) el.classList.remove("show");
+  });
+  const dist = parseInt(path.distance) || 0;
+  const durSec = parseInt(path.duration) || 0;
+  const durMin = Math.max(1, Math.round(durSec / 60));
+  inlineEl.querySelector(".rp-dist").textContent = fmtDist(dist);
+  inlineEl.querySelector(".rp-time").textContent = durMin + " 分钟";
+
+  let desc = \`步行约 \${durMin} 分钟\`;
+  if (dist < 1000) desc += "，距离很近，推荐步行";
+  else if (dist < 2000) desc += "，步行可接受";
+  else desc += "，建议考虑公交/骑行";
+  if (isEst) desc += "（估算）";
+  inlineEl.querySelector(".rp-desc").textContent = desc;
+
+  const steps = path.steps || [];
+  inlineEl.querySelector(".rp-steps").innerHTML = steps.map((s, i) => \`
+    <div class="step"><div class="n">\${i+1}</div><div>\${escapeHtml(s.instruction || "")}</div></div>
+  \`).join("");
+
+  inlineEl.classList.add("show");
+  inlineEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function drawRouteLine(path){
+  if (!map || !window.AMap) return;
+  if (routeLine) { map.remove(routeLine); routeLine = null; }
+  const steps = path.steps || [];
+  const lnglats = [];
+  steps.forEach(s => {
+    if (s.polyline) {
+      s.polyline.split(";").forEach(pt => {
+        const [x, y] = pt.split(",");
+        if (x && y) lnglats.push([parseFloat(x), parseFloat(y)]);
+      });
+    }
+  });
+  if (!lnglats.length) return;
+  routeLine = new AMap.Polyline({
+    path: lnglats,
+    map: map,
+    strokeColor: "#3b82f6",
+    strokeWeight: 5,
+    strokeOpacity: 0.9,
+    lineJoin: "round",
+    showDir: true
+  });
+  map.setFitView([routeLine], false, [80, 80, 200, 80]);
+}
+
+function closeRoutePanel(){
+  document.querySelectorAll(".route-inline.show").forEach(el => el.classList.remove("show"));
+  if (routeLine && map) { map.remove(routeLine); routeLine = null; }
+}
+
+// ============ 地图模块 ============
+// 重画/更新"我在这里"标记
+function updateUserMarker(center){
+  if (!map || !window.AMap) return;
+  if (userMarker) { map.remove(userMarker); userMarker = null; }
+  userMarker = new AMap.Marker({
+    position: [userLng, userLat],
+    map: map,
+    zIndex: 200,
+    icon: new AMap.Icon({
+      size: new AMap.Size(28, 28),
+      image: "data:image/svg+xml;base64," + btoa('<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 28 28"><circle cx="14" cy="14" r="10" fill="#3b82f6" stroke="#fff" stroke-width="3"/></svg>'),
+      imageSize: new AMap.Size(28, 28)
+    }),
+    label: { content: "我在这里", direction: "top", offset: new AMap.Pixel(0, -4) }
+  });
+  if (center) map.setCenter([userLng, userLat]);
+}
+
+async function initMap(){
+  try {
+    await loadAmapJS();
+    map = new AMap.Map("map", {
+      zoom: 14,
+      center: [userLng, userLat],
+      resizeEnable: true
+    });
+    infoWindow = new AMap.InfoWindow({ offset: new AMap.Pixel(0, -32), closeWhenClickMap: true });
+    updateUserMarker(false);
+  } catch (e) {
+    console.warn("高德 JS API 加载失败", e);
+    $("map").innerHTML = \`<div class="empty" style="padding-top:60px;">地图加载失败<br/>API Key 可能未开通 JS API 服务</div>\`;
+  }
+}
+
+function drawMarkers(list){
+  if (!map || !window.AMap) return;
+  const data = list || applyFilters(currentList);
+  markers.forEach(m => m.setMap(null));
+  markers = [];
+  data.forEach(p => {
+    if (!p.lng || !p.lat) return;
+    const marker = new AMap.Marker({
+      position: [p.lng, p.lat],
+      map: map,
+      icon: new AMap.Icon({
+        size: new AMap.Size(24, 30),
+        image: "data:image/svg+xml;base64," + btoa('<svg xmlns="http://www.w3.org/2000/svg" width="24" height="30" viewBox="0 0 24 30"><path d="M12 0C5.4 0 0 5.4 0 12c0 9 12 18 12 18s12-9 12-18c0-6.6-5.4-12-12-12z" fill="#ff6b6b"/><circle cx="12" cy="12" r="4" fill="#fff"/></svg>'),
+        imageSize: new AMap.Size(24, 30)
+      })
+    });
+    marker.on("click", () => openInfo(p));
+    markers.push(marker);
+  });
+  if (markers.length && !routeLine) {
+    map.setFitView(markers, false, [60, 60, 60, 60]);
+  }
+}
+
+function openInfo(p){
+  if (!infoWindow || !map) return;
+  const reason = genRecommendReason(p);
+  const content = \`
+    <div style="padding:8px;min-width:220px;max-width:300px;">
+      <div style="font-size:14px;font-weight:600;color:#222;margin-bottom:6px;">\${escapeHtml(p.name)}</div>
+      <div style="font-size:12px;color:#666;line-height:1.6;">
+        <div>📍 \${fmtDist(p.distance)} · \${escapeHtml(p.type)}</div>
+        \${p.price ? \`<div>💰 人均 ¥\${p.price}（\${tierName(priceTier(p))}）</div>\` : ""}
+        \${p.rating ? \`<div>⭐ 评分 \${p.rating.toFixed(1)}</div>\` : ""}
+        \${p.address ? \`<div>🏠 \${escapeHtml(p.address)}</div>\` : ""}
+        \${p.tel ? \`<div>📞 \${escapeHtml(p.tel)}</div>\` : ""}
+      </div>
+      <div style="margin-top:6px;padding:6px;background:#fff7f0;border-radius:4px;font-size:11px;color:#b06030;">💡 \${escapeHtml(reason)}</div>
+      <button onclick="void(0)" id="rpGoBtn" style="margin-top:8px;width:100%;padding:6px;background:#ff6b6b;color:#fff;border:none;border-radius:4px;font-size:12px;cursor:pointer;">🚶 去这里</button>
+      <button onclick="void(0)" id="setMyLocBtn" style="margin-top:6px;width:100%;padding:6px;background:#3b82f6;color:#fff;border:none;border-radius:4px;font-size:12px;cursor:pointer;">📍 设为我的位置</button>
+    </div>\`;
+  infoWindow.setContent(content);
+  infoWindow.open(map, [p.lng, p.lat]);
+  setTimeout(() => {
+    const btn = document.getElementById("rpGoBtn");
+    if (btn) btn.addEventListener("click", () => {
+      // 从信息窗触发时，定位到列表中对应项并展开其内联路线
+      const itemEl = document.querySelector(\`.item[data-id="\${p.id}"]\`);
+      const goBtn = itemEl ? itemEl.querySelector(".go") : null;
+      if (itemEl) itemEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      planRoute(p, goBtn);
+    });
+    const setBtn = document.getElementById("setMyLocBtn");
+    if (setBtn) setBtn.addEventListener("click", () => setAsMyLocation(p));
+  }, 50);
+}
+
+// 定位有偏差时：把某家店铺的位置设为"我的位置"，重新校准
+async function setAsMyLocation(p){
+  if (!p || !p.lng || !p.lat) { showTip("该店铺无坐标信息"); return; }
+  userLng = p.lng;
+  userLat = p.lat;
+  showTip(\`已将「\${p.name}」设为我的位置\`);
+  // 逆地理编码更新地址文字
+  await reverseGeocode();
+  // 更新地图上的"我在这里"标记并居中
+  if (map && window.AMap) {
+    if (routeLine) { map.remove(routeLine); routeLine = null; }
+    closeRoutePanel();
+    updateUserMarker(true);
+    map.setZoom(15);
+  }
+  if (infoWindow) infoWindow.close();
+  // 重算所有餐厅与新的"我的位置"的距离，并重新排序
+  currentList = currentList.map(x => {
+    if (!x.lng || !x.lat) return x;
+    return { ...x, distance: calcDistance(userLng, userLat, x.lng, x.lat) };
+  });
+  renderList();
+}
+
+function focusMarker(p){
+  if (!map) return;
+  map.setZoomAndCenter(16, [p.lng, p.lat]);
+  openInfo(p);
+}
+
+// ============ 事件绑定 ============
+function bindEvents(){
+  $("searchBtn").addEventListener("click", () => searchPOI($("kw").value.trim()));
+  $("kw").addEventListener("keydown", e => { if (e.key === "Enter") searchPOI($("kw").value.trim()); });
+  document.querySelectorAll(".quick-tags span").forEach(el => {
+    el.addEventListener("click", () => {
+      $("kw").value = el.dataset.kw;
+      searchPOI(el.dataset.kw);
+    });
+  });
+  document.querySelectorAll(".sorts button").forEach(el => {
+    el.addEventListener("click", () => {
+      document.querySelectorAll(".sorts button").forEach(b => b.classList.remove("active"));
+      el.classList.add("active");
+      currentSort = el.dataset.sort;
+      renderList();
+    });
+  });
+  // 筛选器
+  $("priceFilter").querySelectorAll("button").forEach(el => {
+    el.addEventListener("click", () => {
+      $("priceFilter").querySelectorAll("button").forEach(b => b.classList.remove("active"));
+      el.classList.add("active");
+      priceFilter = el.dataset.v;
+      renderList();
+    });
+  });
+  $("tasteFilter").querySelectorAll("button").forEach(el => {
+    el.addEventListener("click", () => {
+      $("tasteFilter").querySelectorAll("button").forEach(b => b.classList.remove("active"));
+      el.classList.add("active");
+      tasteFilter = el.dataset.v;
+      renderList();
+    });
+  });
+  // 内联路线面板关闭（事件委托，因为列表是动态渲染的）
+  $("list").addEventListener("click", (e) => {
+    if (e.target.classList && e.target.classList.contains("rp-close")) {
+      e.stopPropagation();
+      const panel = e.target.closest(".route-inline");
+      if (panel) panel.classList.remove("show");
+      if (routeLine && map) { map.remove(routeLine); routeLine = null; }
+    }
+  });
+  // 手动选择城市
+  $("locRetry").addEventListener("click", openCityModal);
+  $("cityCancel").addEventListener("click", closeCityModal);
+  $("cityOk").addEventListener("click", async () => {
+    const city = $("cityInput").value.trim();
+    if (!city) return;
+    closeCityModal();
+    $("locText").textContent = "正在查询...";
+    const ok = await locateByCityName(city);
+    if (ok) showTip("已切换到：" + city);
+  });
+  $("cityInput").addEventListener("keydown", e => { if (e.key === "Enter") $("cityOk").click(); });
+}
+
+// ============ 启动 ============
+(async function init(){
+  await loadConfig();      // 先拿 JS API Key / 安全密钥
+  bindEvents();
+  await locateByIP();
+  await initMap();
+})();
+</script>
+</body>
+</html>`;
