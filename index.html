@@ -775,12 +775,13 @@ function updateUserMarker(center){
     position: [userLng, userLat],
     map: map,
     zIndex: 200,
+    offset: new AMap.Pixel(-14, -14),
     icon: new AMap.Icon({
       size: new AMap.Size(28, 28),
       image: "data:image/svg+xml;base64," + btoa('<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 28 28"><circle cx="14" cy="14" r="10" fill="#3b82f6" stroke="#fff" stroke-width="3"/></svg>'),
       imageSize: new AMap.Size(28, 28)
     }),
-    label: { content: "我在这里", direction: "top", offset: new AMap.Pixel(0, -4) }
+    label: { content: "我在这里", direction: "top", offset: new AMap.Pixel(0, -16) }
   });
   if (center) map.setCenter([userLng, userLat]);
 }
@@ -838,6 +839,7 @@ function drawMarkers(list){
     const marker = new AMap.Marker({
       position: [p.lng, p.lat],
       map: map,
+      offset: new AMap.Pixel(-12, -30),
       icon: new AMap.Icon({
         size: new AMap.Size(24, 30),
         image: "data:image/svg+xml;base64," + btoa('<svg xmlns="http://www.w3.org/2000/svg" width="24" height="30" viewBox="0 0 24 30"><path d="M12 0C5.4 0 0 5.4 0 12c0 9 12 18 12 18s12-9 12-18c0-6.6-5.4-12-12-12z" fill="#ff6b6b"/><circle cx="12" cy="12" r="4" fill="#fff"/></svg>'),
@@ -903,6 +905,7 @@ function showPickLocation(lng, lat, poiName){
     position: [lng, lat],
     map: map,
     zIndex: 190,
+    offset: new AMap.Pixel(-12, -30),
     icon: new AMap.Icon({
       size: new AMap.Size(24, 30),
       image: "data:image/svg+xml;base64," + btoa('<svg xmlns="http://www.w3.org/2000/svg" width="24" height="30" viewBox="0 0 24 30"><path d="M12 0C5.4 0 0 5.4 0 12c0 9 12 18 12 18s12-9 12-18c0-6.6-5.4-12-12-12z" fill="#22c55e"/><circle cx="12" cy="12" r="4" fill="#fff"/></svg>'),
