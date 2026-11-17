@@ -27,7 +27,6 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // 运行时下发前端 JS API Key（页面源码不含任何 Key）
     if (url.pathname === "/api/config") {
       return json({
         jsKey: env.AMAP_JS_KEY || "",
@@ -35,7 +34,6 @@ export default {
       });
     }
 
-    // REST 代理：前端只请求 /api/*，Key 在服务端注入
     const target = REGISTRY[url.pathname];
     if (target) {
       if (!env.AMAP_KEY) return json({ status: "0", info: "AMAP_KEY 未配置" }, 500);
@@ -55,7 +53,6 @@ export default {
       }
     }
 
-    // 其余路径返回页面
     return new Response(HTML, {
       headers: {
         "content-type": "text/html; charset=utf-8",
@@ -321,6 +318,7 @@ async function loadConfig(){
 // ============ 全局状态 ============
 let userLng = 114.05, userLat = 22.55;
 let userAdcode = "";
+let userCity = "";
 let map = null, markers = [], infoWindow = null, routeLine = null, userMarker = null;
 let currentList = [], currentSort = "distance";
 let priceFilter = "all", tasteFilter = "all";
@@ -396,6 +394,7 @@ async function locateByIP(){
         userLng = (lng1 + lng2) / 2;
         userLat = (lat1 + lat2) / 2;
         userAdcode = data.adcode || "";
+        userCity = data.city || "";
         await reverseGeocode();
         showTip(\`已定位：\${data.city || ""}（IP 定位，城市级精度）\`);
         return true;
@@ -451,7 +450,12 @@ async function reverseGeocode(){
       return;
     }
   } catch (e) { console.warn("逆地理编码失败", e); }
-  $("locText").textContent = \`已定位 (\${userLng.toFixed(4)}, \${userLat.toFixed(4)})\`;
+  // 逆地理编码失败时的兜底：优先显示已拿到的城市名，避免只显示裸坐标
+  if (userCity) {
+    $("locText").textContent = \`\${userCity}（\${userLng.toFixed(4)}, \${userLat.toFixed(4)}）\`;
+  } else {
+    $("locText").textContent = \`已定位 (\${userLng.toFixed(4)}, \${userLat.toFixed(4)})\`;
+  }
 }
 
 function locateByBrowser(){
